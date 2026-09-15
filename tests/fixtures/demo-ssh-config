@@ -1,0 +1,17 @@
+Host local-api
+    HostName 127.0.0.1
+    User local
+    Port 3100
+
+Host staging-api
+    HostName 192.0.2.44
+    User deploy
+    Port 22
+
+Host analytics-node
+    HostName 203.0.113.20
+    User operator
+    Port 2222
+
+Host *
+    ServerAliveInterval 30

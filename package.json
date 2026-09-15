@@ -1,0 +1,50 @@
+{
+  "name": "ssh-nexus-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first SSH inventory dashboard and MCP server for AI agents.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,ui -c blue,green \"npm:dev:api\" \"npm:dev:ui\"",
+    "dev:api": "tsx watch src/dashboard-server.ts",
+    "dev:ui": "vite --host 127.0.0.1",
+    "mcp": "tsx src/mcp-stdio.ts",
+    "build": "npm run build:ui && npm run build:server",
+    "build:ui": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist/server/dashboard-server.js",
+    "start:mcp": "node dist/server/mcp-stdio.js",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "express": "^5.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "ws": "^8.18.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.5.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.0",
+    "jsdom": "^26.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}
