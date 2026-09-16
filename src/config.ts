@@ -3,6 +3,7 @@ import path from "node:path";
 
 export interface AppConfig {
   sshConfigPath: string;
+  managedSshConfigPath: string;
   dashboardHost: string;
   dashboardPort: number;
   token?: string;
@@ -12,6 +13,7 @@ export interface AppConfig {
   metricsCacheMs: number;
   maxIndexFiles: number;
   allowRemoteCommands: boolean;
+  allowSshConfigWrites: boolean;
 }
 
 function expandHome(value: string): string {
@@ -43,8 +45,12 @@ export function isLoopbackHost(host: string): boolean {
 export function loadConfig(): AppConfig {
   const dashboardHost = process.env.DASHBOARD_HOST ?? "127.0.0.1";
   const token = process.env.SSH_NEXUS_TOKEN?.trim() || undefined;
+  const allowSshConfigWrites = booleanEnv("ALLOW_SSH_CONFIG_WRITES");
   if (!isLoopbackHost(dashboardHost) && !token) {
     throw new Error("SSH_NEXUS_TOKEN is required when DASHBOARD_HOST is not loopback");
+  }
+  if (allowSshConfigWrites && !token) {
+    throw new Error("SSH_NEXUS_TOKEN is required when ALLOW_SSH_CONFIG_WRITES=true");
   }
 
   const rootsRaw = process.env.PROJECT_ROOTS ?? process.cwd();
@@ -52,9 +58,15 @@ export function loadConfig(): AppConfig {
     .split(path.delimiter)
     .map((root) => path.resolve(expandHome(root.trim())))
     .filter(Boolean);
+  const sshConfigPath = path.resolve(expandHome(process.env.SSH_NEXUS_CONFIG ?? "~/.ssh/config"));
+  const managedSshConfigPath = path.resolve(expandHome(process.env.SSH_NEXUS_MANAGED_CONFIG ?? "~/.ssh/ssh-nexus/hosts.conf"));
+  if (sshConfigPath === managedSshConfigPath) {
+    throw new Error("SSH_NEXUS_MANAGED_CONFIG must be separate from SSH_NEXUS_CONFIG");
+  }
 
   return {
-    sshConfigPath: path.resolve(expandHome(process.env.SSH_NEXUS_CONFIG ?? "~/.ssh/config")),
+    sshConfigPath,
+    managedSshConfigPath,
     dashboardHost,
     dashboardPort: integerEnv("DASHBOARD_PORT", 3100, 1, 65_535),
     token,
@@ -64,5 +76,6 @@ export function loadConfig(): AppConfig {
     metricsCacheMs: integerEnv("METRICS_CACHE_MS", 10_000, 0, 300_000),
     maxIndexFiles: integerEnv("MAX_INDEX_FILES", 5_000, 1, 100_000),
     allowRemoteCommands: booleanEnv("ALLOW_REMOTE_COMMANDS"),
+    allowSshConfigWrites,
   };
 }

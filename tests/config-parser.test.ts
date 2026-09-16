@@ -39,6 +39,7 @@ describe("loadSshHosts", () => {
       user: "ubuntu",
       port: 2222,
       source: "config",
+      managed: false,
     });
     expect(hosts.find((host) => host.alias === "team-api")?.source).toBe("team.conf");
   });

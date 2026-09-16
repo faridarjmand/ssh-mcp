@@ -7,12 +7,14 @@ SSH Nexus is a local-first dashboard and [Model Context Protocol (MCP)](https://
 ## What it includes
 
 - OpenSSH inventory with `Host`, `Include`, effective hostname, user, port, and `ProxyJump` support
+- Structured dashboard add/edit using a separate managed SSH config with atomic backups
 - Green/red reachability status with text labels and connection latency
 - Interactive xterm.js terminal backed by the local `ssh` executable
 - CPU, RAM, root-disk, load, uptime, and disk-I/O metrics over authenticated SSH
 - Provider-neutral MCP tools, resources, and prompts for Codex, Claude Code, Claude Desktop, and compatible clients
 - Bounded project indexing and text search for other AI agents
 - Local-only binding by default, optional bearer authentication, alias allowlisting, and no private keys in the browser
+- Non-overlapping fleet refreshes capped at eight concurrent host probes
 - Responsive, keyboard-accessible dashboard
 
 ## Requirements
@@ -56,6 +58,20 @@ Host production-web
 ```
 
 SSH Nexus lists explicit aliases only. Wildcard blocks such as `Host *` contribute OpenSSH defaults but do not become dashboard cards.
+
+## Managed server editing
+
+Dashboard editing is disabled by default. It never rewrites `~/.ssh/config`; changes go to `SSH_NEXUS_MANAGED_CONFIG` (default `~/.ssh/ssh-nexus/hosts.conf`) and the previous managed file is backed up as `hosts.conf.bak`.
+
+Enable editing with a bearer token:
+
+```bash
+export SSH_NEXUS_TOKEN="$(openssl rand -hex 32)"
+export ALLOW_SSH_CONFIG_WRITES=true
+npm run dev
+```
+
+The editor supports alias, hostname/IP, user, port, and explicit `ProxyJump` aliases. Editing an existing source alias creates a managed override while leaving the original entry untouched. Private-key paths and arbitrary OpenSSH directives are intentionally not editable.
 
 ## Connect an AI agent
 
@@ -153,6 +169,7 @@ The indexer skips `.git`, dependencies, build output, its own generated director
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SSH_NEXUS_CONFIG` | `~/.ssh/config` | OpenSSH config path |
+| `SSH_NEXUS_MANAGED_CONFIG` | `~/.ssh/ssh-nexus/hosts.conf` | Dashboard-owned structured host entries |
 | `DASHBOARD_HOST` | `127.0.0.1` | Bind address |
 | `DASHBOARD_PORT` | `3100` | API/dashboard port |
 | `SSH_NEXUS_TOKEN` | unset | Bearer token; required for non-loopback bind |
@@ -161,6 +178,7 @@ The indexer skips `.git`, dependencies, build output, its own generated director
 | `SSH_COMMAND_TIMEOUT_MS` | `12000` | Fixed metrics/MCP command timeout |
 | `METRICS_CACHE_MS` | `10000` | Metrics cache lifetime |
 | `MAX_INDEX_FILES` | `5000` | Per-index file limit |
+| `ALLOW_SSH_CONFIG_WRITES` | `false` | Enable managed host writes; also requires a token |
 | `ALLOW_REMOTE_COMMANDS` | `false` | Enable dangerous MCP command tool |
 
 The dashboard never reads private-key content. OpenSSH itself resolves identities, agents, proxies, host keys, and authentication.
@@ -171,10 +189,11 @@ Native installation is recommended because it naturally uses your SSH agent and 
 
 ```bash
 export SSH_NEXUS_TOKEN="$(openssl rand -hex 32)"
+export ALLOW_SSH_CONFIG_WRITES=true
 docker compose up --build
 ```
 
-The browser asks for this token. The Compose file mounts `${HOME}/.ssh` read-only and the repository at `/workspace`. On Linux, make sure the mounted key files are readable by the container's `node` user and that host keys are already present in `known_hosts`.
+The browser asks for this token. Compose mounts `${HOME}/.ssh` read-only, keeps managed entries in the persistent `ssh-nexus-data` volume, and leaves config editing disabled unless `ALLOW_SSH_CONFIG_WRITES=true`. The repository is mounted at `/workspace`. On Linux, make sure mounted key files are readable by the container's `node` user and that host keys are already present in `known_hosts`.
 
 ## Validate before pushing
 

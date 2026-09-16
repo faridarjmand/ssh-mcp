@@ -14,6 +14,7 @@ afterEach(async () => {
 function config(root: string): AppConfig {
   return {
     sshConfigPath: path.join(root, "ssh-config"),
+    managedSshConfigPath: path.join(root, "managed", "hosts.conf"),
     dashboardHost: "127.0.0.1",
     dashboardPort: 3100,
     projectRoots: [root],
@@ -22,6 +23,7 @@ function config(root: string): AppConfig {
     metricsCacheMs: 0,
     maxIndexFiles: 100,
     allowRemoteCommands: false,
+    allowSshConfigWrites: false,
   };
 }
 

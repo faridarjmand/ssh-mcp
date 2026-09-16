@@ -3,10 +3,12 @@ import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import { ProjectIndexer } from "../indexer/project-index.js";
 import { SshService } from "../ssh/client.js";
+import { ManagedHostStore } from "../ssh/managed-hosts.js";
 
 export interface Services {
   config: AppConfig;
   ssh: SshService;
+  managedHosts: ManagedHostStore;
   indexer: ProjectIndexer;
 }
 
@@ -25,9 +27,11 @@ function errorResult(error: unknown) {
 }
 
 export function createServices(config: AppConfig): Services {
+  const managedHosts = new ManagedHostStore(config.sshConfigPath, config.managedSshConfigPath);
   return {
     config,
-    ssh: new SshService(config),
+    ssh: new SshService(config, managedHosts),
+    managedHosts,
     indexer: new ProjectIndexer(config),
   };
 }
@@ -37,7 +41,7 @@ export function createMcpServer(services: Services): McpServer {
     { name: "ssh-nexus", version: "0.1.0" },
     {
       instructions:
-        "SSH Nexus provides an inventory from the user's SSH config, safe reachability checks, fixed read-only Linux metrics, and a bounded project index. Prefer read-only tools. The run_ssh_command tool is disabled unless the operator explicitly opts in with ALLOW_REMOTE_COMMANDS=true; ask the user before commands that change remote state. Never request, print, or store private-key material.",
+        "SSH Nexus provides an inventory from the user's read-only SSH config plus dashboard-managed entries, safe reachability checks, fixed read-only Linux metrics, and a bounded project index. Prefer read-only tools. The run_ssh_command tool is disabled unless the operator explicitly opts in with ALLOW_REMOTE_COMMANDS=true; ask the user before commands that change remote state. Never request, print, or store private-key material.",
     },
   );
 
@@ -45,7 +49,7 @@ export function createMcpServer(services: Services): McpServer {
     "list_ssh_hosts",
     {
       title: "List SSH hosts",
-      description: "List explicit, non-wildcard aliases from the configured OpenSSH config file.",
+      description: "List explicit, non-wildcard aliases from the configured OpenSSH source and managed overlay.",
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },

@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type { AppConfig } from "../config.js";
 import type { HostMetrics, HostStatus, PublicSshHost } from "../shared.js";
 import { isSafeAlias, loadSshHosts } from "./config-parser.js";
+import { ManagedHostStore } from "./managed-hosts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -86,13 +87,30 @@ export class SshService {
   private hostCache?: { expiresAt: number; hosts: PublicSshHost[] };
   private readonly metricsCache = new Map<string, { expiresAt: number; metrics: HostMetrics }>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly managedHosts: ManagedHostStore,
+  ) {}
 
   async hosts(force = false): Promise<PublicSshHost[]> {
     if (!force && this.hostCache && this.hostCache.expiresAt > Date.now()) return this.hostCache.hosts;
-    const hosts = await loadSshHosts(this.config.sshConfigPath);
+    const managed = await this.managedHosts.list();
+    const effectiveConfigPath = managed.length
+      ? await this.managedHosts.effectiveConfigPath()
+      : this.config.sshConfigPath;
+    const hosts = await loadSshHosts(this.config.sshConfigPath, {
+      prependConfigPaths: managed.length ? [this.managedHosts.configPath] : [],
+      effectiveConfigPath,
+      managedConfigPath: this.managedHosts.configPath,
+    });
     this.hostCache = { hosts, expiresAt: Date.now() + 5_000 };
     return hosts;
+  }
+
+  invalidateHosts(alias?: string): void {
+    this.hostCache = undefined;
+    if (alias) this.metricsCache.delete(alias);
+    else this.metricsCache.clear();
   }
 
   async host(alias: string): Promise<PublicSshHost> {
@@ -106,13 +124,14 @@ export class SshService {
     const host = await this.host(alias);
     if (!host.proxyJump) return tcpCheck(host, this.config.sshCheckTimeoutMs);
 
+    const configPath = await this.managedHosts.effectiveConfigPath();
     const started = performance.now();
     try {
       await execFileAsync(
         "ssh",
         [
           "-F",
-          this.config.sshConfigPath,
+            configPath,
           "-o",
           "BatchMode=yes",
           "-o",
@@ -136,6 +155,7 @@ export class SshService {
 
   async metrics(alias: string, force = false): Promise<HostMetrics> {
     await this.host(alias);
+    const configPath = await this.managedHosts.effectiveConfigPath();
     const cached = this.metricsCache.get(alias);
     if (!force && cached && cached.expiresAt > Date.now()) return cached.metrics;
     const remoteCommand = `sh -lc ${shellQuote(METRICS_COMMAND)}`;
@@ -145,7 +165,7 @@ export class SshService {
         "ssh",
         [
           "-F",
-          this.config.sshConfigPath,
+            configPath,
           "-o",
           "BatchMode=yes",
           "-o",
@@ -173,13 +193,14 @@ export class SshService {
       throw new Error("Remote command execution is disabled; set ALLOW_REMOTE_COMMANDS=true to opt in");
     }
     await this.host(alias);
+    const configPath = await this.managedHosts.effectiveConfigPath();
     if (!command.trim() || command.length > 8_000 || command.includes("\0")) {
       throw new Error("Command must contain 1 to 8000 characters and no NUL bytes");
     }
     try {
       const result = await execFileAsync(
         "ssh",
-        ["-F", this.config.sshConfigPath, "-o", "BatchMode=yes", "--", alias, command],
+        ["-F", configPath, "-o", "BatchMode=yes", "--", alias, command],
         { timeout: this.config.sshCommandTimeoutMs, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" },
       );
       return { stdout: result.stdout, stderr: result.stderr };
@@ -191,7 +212,8 @@ export class SshService {
 
   async openTerminal(alias: string): Promise<ChildProcessWithoutNullStreams> {
     await this.host(alias);
-    return spawn("ssh", ["-tt", "-F", this.config.sshConfigPath, "--", alias], {
+    const configPath = await this.managedHosts.effectiveConfigPath();
+    return spawn("ssh", ["-tt", "-F", configPath, "--", alias], {
       env: { ...process.env, TERM: "xterm-256color", LC_ALL: process.env.LC_ALL ?? "C.UTF-8" },
       stdio: "pipe",
     });

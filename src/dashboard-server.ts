@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { WebSocket, WebSocketServer } from "ws";
 import { isLoopbackHost, loadConfig } from "./config.js";
 import { createMcpServer, createServices } from "./mcp/server.js";
+import { validateManagedSshHost } from "./ssh/managed-hosts.js";
 
 const config = loadConfig();
 const services = createServices(config);
@@ -33,6 +34,11 @@ function bearerToken(request: Request): string | undefined {
 function requireAuth(request: Request, response: Response, next: NextFunction): void {
   if (sameToken(bearerToken(request))) return next();
   response.status(401).json({ error: "A valid SSH Nexus bearer token is required" });
+}
+
+function requireSshConfigWrites(_request: Request, response: Response, next: NextFunction): void {
+  if (config.allowSshConfigWrites) return next();
+  response.status(403).json({ error: "SSH config editing is disabled; set ALLOW_SSH_CONFIG_WRITES=true and configure a bearer token" });
 }
 
 function errorMessage(error: unknown): string {
@@ -116,6 +122,7 @@ app.get("/api/health", (_request, response) => {
     name: "ssh-nexus",
     authRequired: Boolean(config.token),
     remoteCommandsEnabled: config.allowRemoteCommands,
+    sshConfigWritesEnabled: config.allowSshConfigWrites,
   });
 });
 
@@ -124,6 +131,30 @@ app.use("/api", requireAuth);
 app.get("/api/hosts", asyncRoute(async (_request, response) => {
   const hosts = await services.ssh.hosts(true);
   response.json({ hosts });
+}));
+
+app.get("/api/managed-hosts", asyncRoute(async (_request, response) => {
+  response.json({
+    enabled: config.allowSshConfigWrites,
+    hosts: await services.managedHosts.list(),
+  });
+}));
+
+app.put("/api/managed-hosts/:alias", requireSshConfigWrites, asyncRoute(async (request, response) => {
+  const alias = String(request.params.alias);
+  const input = validateManagedSshHost({ ...request.body, alias });
+  if (input.proxyJump) {
+    const allowedAliases = new Set((await services.ssh.hosts(true)).map((host) => host.alias));
+    for (const jumpAlias of input.proxyJump.split(",")) {
+      if (jumpAlias === alias || !allowedAliases.has(jumpAlias)) {
+        throw new Error(`ProxyJump alias must reference another configured SSH host: ${jumpAlias}`);
+      }
+    }
+  }
+  const managedHost = await services.managedHosts.upsert(input);
+  services.ssh.invalidateHosts(alias);
+  const hosts = await services.ssh.hosts(true);
+  response.json({ managedHost, host: hosts.find((item) => item.alias === alias), hosts });
 }));
 
 app.post("/api/hosts/:alias/check", asyncRoute(async (request, response) => {

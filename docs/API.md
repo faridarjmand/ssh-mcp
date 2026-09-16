@@ -6,6 +6,8 @@ All `/api` endpoints except `/api/health`, plus `/mcp` and the terminal WebSocke
 | --- | --- | --- |
 | `GET` | `/api/health` | Process and authentication mode |
 | `GET` | `/api/hosts` | Explicit SSH inventory |
+| `GET` | `/api/managed-hosts` | Managed entries and write-gate state |
+| `PUT` | `/api/managed-hosts/:alias` | Create or update a managed entry |
 | `POST` | `/api/hosts/:alias/check` | Reachability check |
 | `GET` | `/api/hosts/:alias/metrics` | Cached fixed metrics (`?refresh=true` bypasses cache) |
 | `GET` | `/api/project` | Latest index metadata |
@@ -19,6 +21,21 @@ Errors use JSON:
 ```json
 { "error": "Human-readable message" }
 ```
+
+## Managed SSH hosts
+
+Mutation endpoints require `ALLOW_SSH_CONFIG_WRITES=true` and a configured bearer token. `PUT` accepts:
+
+```json
+{
+  "hostname": "203.0.113.10",
+  "user": "deploy",
+  "port": 22,
+  "proxyJump": "bastion"
+}
+```
+
+The URL alias is authoritative. `user` and `proxyJump` are optional; each proxy-jump name must already be an explicit inventory alias. Responses include the refreshed public inventory. Raw directives, identity paths, and private-key material are not accepted.
 
 ## Terminal WebSocket
 

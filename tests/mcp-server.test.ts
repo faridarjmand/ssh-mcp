@@ -21,6 +21,7 @@ describe("MCP server", () => {
     await fs.writeFile(sshConfigPath, "Host test-host\n  HostName 127.0.0.1\n  Port 22\n");
     const config: AppConfig = {
       sshConfigPath,
+      managedSshConfigPath: path.join(root, "managed", "hosts.conf"),
       dashboardHost: "127.0.0.1",
       dashboardPort: 3100,
       projectRoots: [root],
@@ -29,6 +30,7 @@ describe("MCP server", () => {
       metricsCacheMs: 0,
       maxIndexFiles: 100,
       allowRemoteCommands: false,
+      allowSshConfigWrites: false,
     };
     const server = createMcpServer(createServices(config));
     const client = new Client({ name: "test-client", version: "1.0.0" });

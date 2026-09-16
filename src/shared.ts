@@ -1,12 +1,16 @@
 export type HostState = "unknown" | "checking" | "online" | "offline";
 
-export interface PublicSshHost {
+export interface ManagedSshHost {
   alias: string;
   hostname: string;
   user?: string;
   port: number;
   proxyJump?: string;
+}
+
+export interface PublicSshHost extends ManagedSshHost {
   source: string;
+  managed: boolean;
 }
 
 export interface HostStatus {

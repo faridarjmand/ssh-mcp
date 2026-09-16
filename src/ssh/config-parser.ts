@@ -13,6 +13,12 @@ interface AliasSource {
   source: string;
 }
 
+interface LoadSshHostsOptions {
+  prependConfigPaths?: string[];
+  effectiveConfigPath?: string;
+  managedConfigPath?: string;
+}
+
 function removeComment(line: string): string {
   let single = false;
   let double = false;
@@ -110,7 +116,7 @@ function parseSshG(stdout: string): Map<string, string[]> {
   return values;
 }
 
-async function effectiveHost(configPath: string, item: AliasSource): Promise<PublicSshHost> {
+async function effectiveHost(configPath: string, item: AliasSource, managedConfigPath?: string): Promise<PublicSshHost> {
   let values = new Map<string, string[]>();
   try {
     const result = await execFileAsync("ssh", ["-G", "-F", configPath, "--", item.alias], {
@@ -133,6 +139,7 @@ async function effectiveHost(configPath: string, item: AliasSource): Promise<Pub
     port: Number.isInteger(parsedPort) ? parsedPort : 22,
     proxyJump: proxyJump && proxyJump !== "none" ? proxyJump : undefined,
     source: path.basename(item.source),
+    managed: Boolean(managedConfigPath && path.resolve(item.source) === path.resolve(managedConfigPath)),
   };
 }
 
@@ -154,11 +161,13 @@ async function mapLimit<T, R>(
   return result;
 }
 
-export async function loadSshHosts(configPath: string): Promise<PublicSshHost[]> {
-  const rootDirectory = path.dirname(configPath);
-  const lines = await flattenConfig(configPath, rootDirectory);
+export async function loadSshHosts(configPath: string, options: LoadSshHostsOptions = {}): Promise<PublicSshHost[]> {
+  const configPaths = [...(options.prependConfigPaths ?? []), configPath];
+  const nestedLines = await Promise.all(configPaths.map((item) => flattenConfig(item, path.dirname(item))));
+  const lines = nestedLines.flat();
   const aliases = parseAliases(lines);
-  return mapLimit(aliases, 8, (item) => effectiveHost(configPath, item));
+  const effectiveConfigPath = options.effectiveConfigPath ?? configPath;
+  return mapLimit(aliases, 8, (item) => effectiveHost(effectiveConfigPath, item, options.managedConfigPath));
 }
 
 export function isSafeAlias(alias: string): boolean {

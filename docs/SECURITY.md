@@ -9,6 +9,8 @@ SSH Nexus controls access to infrastructure. Treat the process and every connect
 - SSH aliases come from a server-side allowlist derived from the config; browser input cannot select arbitrary destinations or SSH options.
 - Child processes use argument arrays instead of shell interpolation for destinations.
 - Automatic metrics run one fixed read-only script with `BatchMode=yes` and a timeout.
+- Dashboard SSH config writes are disabled unless `ALLOW_SSH_CONFIG_WRITES=true`, and enabling them requires a bearer token even on loopback.
+- The source SSH config remains read-only; structured changes go to a separate regular file with mode `0600` and an atomic backup.
 - Arbitrary MCP commands are disabled unless `ALLOW_REMOTE_COMMANDS=true`.
 - The project index stays under an allowed root and excludes symlinks and secret-like files.
 - Common browser hardening headers and origin checks protect the terminal upgrade.
@@ -22,6 +24,14 @@ OpenSSH may invoke configured helpers such as `ProxyCommand`, `Match exec`, secu
 ## Interactive terminal
 
 The WebSocket forwards keystrokes and terminal output. It does not record sessions. Browser extensions, reverse proxies, and anyone holding the bearer token may still observe or initiate sessions; keep the dashboard local.
+
+## Managed SSH entries
+
+The editor accepts only a safe alias, hostname/IP, optional user, numeric port, and `ProxyJump` aliases already present in the server-side inventory. It rejects whitespace/control-character injection, unknown SSH directives, duplicate entries, and symlink-backed managed files.
+
+Edits never rewrite `SSH_NEXUS_CONFIG`. They atomically replace `SSH_NEXUS_MANAGED_CONFIG` and preserve the previous version beside it with a `.bak` suffix. A generated process-local wrapper loads managed entries before the source config so an override can inherit options such as `IdentityFile` without revealing them to the browser.
+
+Docker mounts `${HOME}/.ssh` read-only and stores the managed file in a separate named volume. Disabling the write gate makes the managed write endpoint return `403`.
 
 ## Project index
 

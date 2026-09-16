@@ -16,6 +16,7 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY --from=build /app/dist ./dist
+RUN mkdir -p /data/ssh && chown -R node:node /data
 USER node
 EXPOSE 3100
 CMD ["node", "dist/server/dashboard-server.js"]

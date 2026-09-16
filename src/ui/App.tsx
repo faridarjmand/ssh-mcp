@@ -1,14 +1,23 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import type { HostMetrics, HostState, HostStatus, ProjectIndex, PublicSshHost, SearchMatch } from "../shared";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import type { HostMetrics, HostState, HostStatus, ManagedSshHost, ProjectIndex, PublicSshHost, SearchMatch } from "../shared";
 import { AgentModal } from "./AgentModal";
+import { mapWithConcurrency } from "./fleet-refresh";
+import { HostEditorModal } from "./HostEditorModal";
 import { Icon } from "./icons";
 
 const TerminalModal = lazy(() => import("./TerminalModal").then((module) => ({ default: module.TerminalModal })));
+const FLEET_REFRESH_CONCURRENCY = 8;
 
 interface Health {
   status: string;
   authRequired: boolean;
   remoteCommandsEnabled: boolean;
+  sshConfigWritesEnabled: boolean;
+}
+
+interface HostMutationResult {
+  host?: PublicSshHost;
+  hosts: PublicSshHost[];
 }
 
 function bytes(value: number | null | undefined): string {
@@ -31,6 +40,13 @@ function ageLabel(iso?: string): string {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${Math.round(seconds / 3600)}h ago`;
+}
+
+function withoutEntry<T>(values: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.hasOwn(values, key)) return values;
+  const next = { ...values };
+  delete next[key];
+  return next;
 }
 
 function MetricBar({ label, value, detail, icon }: { label: string; value: number | null; detail: string; icon: "cpu" | "memory" | "drive" }) {
@@ -56,6 +72,8 @@ function HostCard({
   metricError,
   onOpen,
   onRefresh,
+  onEdit,
+  editingEnabled,
 }: {
   host: PublicSshHost;
   status?: HostStatus;
@@ -63,6 +81,8 @@ function HostCard({
   metricError?: string;
   onOpen: () => void;
   onRefresh: () => void;
+  onEdit: () => void;
+  editingEnabled: boolean;
 }) {
   const state = status?.state ?? "unknown";
   const memoryPercent = metrics ? percent(metrics.memoryUsedBytes, metrics.memoryTotalBytes) : null;
@@ -77,7 +97,7 @@ function HostCard({
         </div>
         <div className="host-meta">
           <span>{host.proxyJump ? `via ${host.proxyJump}` : "Direct connection"}</span>
-          <span>{status?.latencyMs ? `${status.latencyMs} ms` : host.source}</span>
+          <span>{status?.latencyMs ? `${status.latencyMs} ms` : `${host.source}${host.managed ? " · managed" : ""}`}</span>
         </div>
         <div className="metric-stack">
           {metrics ? (
@@ -98,7 +118,10 @@ function HostCard({
       </button>
       <div className="host-card__foot">
         <span>Updated {ageLabel(status?.checkedAt)}</span>
-        <button type="button" onClick={onRefresh} disabled={state === "checking"} aria-label={`Refresh ${host.alias}`}><Icon name="refresh" />Refresh</button>
+        <div className="host-card__actions">
+          <button type="button" onClick={onEdit} disabled={!editingEnabled} title={editingEnabled ? "Edit with an SSH Nexus managed entry" : "Enable ALLOW_SSH_CONFIG_WRITES to edit"} aria-label={`Edit ${host.alias}`}><Icon name="edit" />Edit</button>
+          <button type="button" onClick={onRefresh} disabled={state === "checking"} aria-label={`Refresh ${host.alias}`}><Icon name="refresh" />Refresh</button>
+        </div>
       </div>
     </article>
   );
@@ -114,6 +137,7 @@ export function App() {
   const [metrics, setMetrics] = useState<Record<string, HostMetrics>>({});
   const [metricErrors, setMetricErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const [filter, setFilter] = useState<"all" | "online" | "offline">("all");
   const [search, setSearch] = useState("");
   const [terminalHost, setTerminalHost] = useState<string | null>(null);
@@ -124,6 +148,9 @@ export function App() {
   const [projectQuery, setProjectQuery] = useState("");
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [notice, setNotice] = useState("");
+  const [editorHost, setEditorHost] = useState<PublicSshHost | null | undefined>(undefined);
+  const hostRefreshes = useRef(new Map<string, Promise<void>>());
+  const fleetRefresh = useRef<Promise<void> | null>(null);
 
   const api = useCallback(async <T,>(url: string, init?: RequestInit): Promise<T> => {
     const response = await fetch(url, {
@@ -135,31 +162,69 @@ export function App() {
     return body as T;
   }, [token]);
 
-  const refreshHost = useCallback(async (host: PublicSshHost) => {
-    setStatuses((current) => ({ ...current, [host.alias]: { alias: host.alias, state: "checking" } }));
-    setMetricErrors((current) => { const next = { ...current }; delete next[host.alias]; return next; });
-    try {
-      const status = await api<HostStatus>(`/api/hosts/${encodeURIComponent(host.alias)}/check`, { method: "POST" });
-      setStatuses((current) => ({ ...current, [host.alias]: status }));
-      if (status.state === "online") {
+  const refreshHost = useCallback((host: PublicSshHost): Promise<void> => {
+    const existing = hostRefreshes.current.get(host.alias);
+    if (existing) return existing;
+
+    const operation = (async () => {
+      setStatuses((current) => ({ ...current, [host.alias]: { alias: host.alias, state: "checking" } }));
+      setMetricErrors((current) => withoutEntry(current, host.alias));
+      try {
+        const status = await api<HostStatus>(`/api/hosts/${encodeURIComponent(host.alias)}/check`, { method: "POST" });
+        setStatuses((current) => ({ ...current, [host.alias]: status }));
+        if (status.state !== "online") {
+          setMetrics((current) => withoutEntry(current, host.alias));
+          return;
+        }
+
         try {
           const value = await api<HostMetrics>(`/api/hosts/${encodeURIComponent(host.alias)}/metrics`);
           setMetrics((current) => ({ ...current, [host.alias]: value }));
         } catch (error) {
+          setMetrics((current) => withoutEntry(current, host.alias));
           setMetricErrors((current) => ({ ...current, [host.alias]: error instanceof Error ? error.message : "Metrics unavailable" }));
         }
+      } catch (error) {
+        setMetrics((current) => withoutEntry(current, host.alias));
+        setStatuses((current) => ({
+          ...current,
+          [host.alias]: {
+            alias: host.alias,
+            state: "offline",
+            checkedAt: new Date().toISOString(),
+            message: error instanceof Error ? error.message : "Check failed",
+          },
+        }));
       }
-    } catch (error) {
-      setStatuses((current) => ({ ...current, [host.alias]: { alias: host.alias, state: "offline", checkedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Check failed" } }));
-    }
+    })().finally(() => {
+      hostRefreshes.current.delete(host.alias);
+    });
+
+    hostRefreshes.current.set(host.alias, operation);
+    return operation;
   }, [api]);
 
-  const refreshAll = useCallback(async (items: PublicSshHost[]) => {
-    await Promise.allSettled(items.map((host) => refreshHost(host)));
+  const refreshAll = useCallback((items: PublicSshHost[]): Promise<void> => {
+    if (fleetRefresh.current) return fleetRefresh.current;
+
+    setRefreshingAll(true);
+    const operation = mapWithConcurrency(items, FLEET_REFRESH_CONCURRENCY, refreshHost)
+      .then(() => undefined)
+      .catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Fleet refresh failed");
+      });
+    fleetRefresh.current = operation;
+    const complete = () => {
+      if (fleetRefresh.current !== operation) return;
+      fleetRefresh.current = null;
+      setRefreshingAll(false);
+    };
+    void operation.then(complete, complete);
+    return operation;
   }, [refreshHost]);
 
   useEffect(() => {
-    fetch("/api/health").then((response) => response.json()).then(setHealth).catch(() => setHealth({ status: "error", authRequired: false, remoteCommandsEnabled: false }));
+    fetch("/api/health").then((response) => response.json()).then(setHealth).catch(() => setHealth({ status: "error", authRequired: false, remoteCommandsEnabled: false, sshConfigWritesEnabled: false }));
   }, []);
 
   useEffect(() => {
@@ -234,8 +299,23 @@ export function App() {
     } catch (error) { setNotice(error instanceof Error ? error.message : "Search failed"); }
   };
 
+  const saveManagedHost = async (host: ManagedSshHost) => {
+    const result = await api<HostMutationResult>(`/api/managed-hosts/${encodeURIComponent(host.alias)}`, {
+      method: "PUT",
+      body: JSON.stringify(host),
+    });
+    setHosts(result.hosts);
+    setStatuses((current) => withoutEntry(current, host.alias));
+    setMetrics((current) => withoutEntry(current, host.alias));
+    setMetricErrors((current) => withoutEntry(current, host.alias));
+    setEditorHost(undefined);
+    setNotice(`Saved managed SSH host ${host.alias}`);
+    if (result.host) void refreshHost(result.host);
+  };
+
   const closeTerminal = useCallback(() => setTerminalHost(null), []);
   const closeAgents = useCallback(() => setAgentOpen(false), []);
+  const closeEditor = useCallback(() => setEditorHost(undefined), []);
 
   if (!health || loading) return <div className="loading-screen"><div className="brand-orbit"><span /></div><p>Loading SSH Nexus</p></div>;
 
@@ -261,29 +341,33 @@ export function App() {
       <main id="top">
         <header className="topbar">
           <div><p className="eyebrow">INFRASTRUCTURE / LIVE INVENTORY</p><h1>Your servers, one command away.</h1></div>
-          <div className="topbar-actions"><button className="secondary-button" type="button" onClick={() => void refreshAll(hosts)}><Icon name="refresh" />Refresh</button><button className="primary-button" type="button" onClick={openAgents}><Icon name="code" />Connect AI</button></div>
+          <div className="topbar-actions"><button className="secondary-button" type="button" onClick={() => void refreshAll(hosts)} disabled={refreshingAll || !hosts.length}><Icon name="refresh" />{refreshingAll ? "Refreshing…" : "Refresh"}</button><button className="primary-button" type="button" onClick={openAgents}><Icon name="code" />Connect AI</button></div>
         </header>
 
         <section className="overview" aria-label="Inventory overview">
-          <div><span>Total hosts</span><strong>{hosts.length.toString().padStart(2, "0")}</strong><small>from ~/.ssh/config</small></div>
+          <div><span>Total hosts</span><strong>{hosts.length.toString().padStart(2, "0")}</strong><small>source + managed config</small></div>
           <div><span>Online</span><strong className="online-text">{counts.online.toString().padStart(2, "0")}</strong><small>accepting connections</small></div>
           <div><span>Offline</span><strong className="offline-text">{counts.offline.toString().padStart(2, "0")}</strong><small>needs attention</small></div>
           <div><span>Project files</span><strong>{project?.fileCount.toLocaleString() ?? "—"}</strong><small>{project ? `indexed ${ageLabel(project.generatedAt)}` : "not indexed yet"}</small></div>
         </section>
 
         <section id="inventory" className="section-block">
-          <div className="section-heading"><div><p className="eyebrow">SERVER FLEET</p><h2>SSH inventory</h2></div><span className="sync-label" aria-live="polite"><i />Auto-refresh every 30 seconds</span></div>
+          <div className="section-heading"><div><p className="eyebrow">SERVER FLEET</p><h2>SSH inventory</h2></div><span className="sync-label" aria-live="polite"><i />{refreshingAll ? "Refresh in progress" : "Auto-refresh every 30 seconds"} · max {FLEET_REFRESH_CONCURRENCY} concurrent</span></div>
           <div className="inventory-tools">
             <label className="search-box"><Icon name="search" /><span className="sr-only">Search hosts</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search alias, host, or user" /></label>
-            <div className="filter-tabs" role="group" aria-label="Filter server status">
-              {(["all", "online", "offline"] as const).map((item) => <button type="button" key={item} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item === "all" ? `All ${hosts.length}` : `${item[0].toUpperCase()}${item.slice(1)} ${counts[item]}`}</button>)}
+            <div className="inventory-actions">
+              <div className="filter-tabs" role="group" aria-label="Filter server status">
+                {(["all", "online", "offline"] as const).map((item) => <button type="button" key={item} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item === "all" ? `All ${hosts.length}` : `${item[0].toUpperCase()}${item.slice(1)} ${counts[item]}`}</button>)}
+              </div>
+              <button className="secondary-button add-server-button" type="button" onClick={() => setEditorHost(null)} disabled={!health.sshConfigWritesEnabled} title={health.sshConfigWritesEnabled ? "Add a managed SSH server" : "Set SSH_NEXUS_TOKEN and ALLOW_SSH_CONFIG_WRITES=true"}><Icon name="plus" />Add server</button>
             </div>
           </div>
+          {!health.sshConfigWritesEnabled && <div className="config-write-notice"><Icon name="activity" /><span>Server editing is off by default. Set <code>SSH_NEXUS_TOKEN</code> and <code>ALLOW_SSH_CONFIG_WRITES=true</code> to enable managed entries.</span></div>}
           {authError && <div className="inline-error"><Icon name="activity" />{authError}</div>}
           <div className="host-grid">
-            {visibleHosts.map((host) => <HostCard key={host.alias} host={host} status={statuses[host.alias]} metrics={metrics[host.alias]} metricError={metricErrors[host.alias]} onOpen={() => setTerminalHost(host.alias)} onRefresh={() => void refreshHost(host)} />)}
+            {visibleHosts.map((host) => <HostCard key={host.alias} host={host} status={statuses[host.alias]} metrics={metrics[host.alias]} metricError={metricErrors[host.alias]} onOpen={() => setTerminalHost(host.alias)} onRefresh={() => void refreshHost(host)} onEdit={() => setEditorHost(host)} editingEnabled={health.sshConfigWritesEnabled} />)}
           </div>
-          {!visibleHosts.length && <div className="empty-state"><Icon name="server" /><h3>No hosts found</h3><p>{hosts.length ? "Change the search or status filter." : "Add an explicit Host alias to ~/.ssh/config, then refresh."}</p></div>}
+          {!visibleHosts.length && <div className="empty-state"><Icon name="server" /><h3>No hosts found</h3><p>{hosts.length ? "Change the search or status filter." : "Add an explicit SSH alias or enable managed server editing."}</p></div>}
         </section>
 
         <section id="project" className="project-section">
@@ -300,6 +384,7 @@ export function App() {
       <div className="sr-only" aria-live="polite">{notice}</div>
       {terminalHost && <Suspense fallback={<div className="modal-backdrop"><div className="modal-loading">Loading terminal…</div></div>}><TerminalModal alias={terminalHost} onClose={closeTerminal} /></Suspense>}
       {agentOpen && <AgentModal configs={clientConfigs} onClose={closeAgents} />}
+      {editorHost !== undefined && <HostEditorModal host={editorHost} onClose={closeEditor} onSave={saveManagedHost} />}
     </div>
   );
 }

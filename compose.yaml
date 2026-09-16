@@ -3,18 +3,29 @@ services:
     build: .
     environment:
       SSH_NEXUS_TOKEN: ${SSH_NEXUS_TOKEN:?set SSH_NEXUS_TOKEN before starting Docker}
+      SSH_NEXUS_MANAGED_CONFIG: /data/ssh/hosts.conf
+      ALLOW_SSH_CONFIG_WRITES: ${ALLOW_SSH_CONFIG_WRITES:-false}
       ALLOW_REMOTE_COMMANDS: ${ALLOW_REMOTE_COMMANDS:-false}
     ports:
       - "127.0.0.1:3100:3100"
     volumes:
       - "${HOME}/.ssh:/home/node/.ssh:ro"
       - ".:/workspace"
+      - "ssh-nexus-data:/data"
     read_only: true
     tmpfs:
       - /tmp
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
+
+volumes:
+  ssh-nexus-data:
